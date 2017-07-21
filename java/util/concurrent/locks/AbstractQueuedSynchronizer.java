@@ -391,18 +391,19 @@ public abstract class AbstractQueuedSynchronizer
 
         /**
          * waitStatus value to indicate successor's thread needs unparking<br />
-         *
+         * 线程的等待状态: 表示当前节点以及成功执行,等待unpark
          * */
         static final int SIGNAL    = -1;
 
         /**
          * waitStatus value to indicate thread is waiting on condition <br />
-         * 线程的等待状态: 标识线程处于等待状态
+         * 线程的等待状态: 标识线程在condition queue中处于等待状态,等待某一个条件
          * */
         static final int CONDITION = -2;
         /**
          * waitStatus value to indicate the next acquireShared should
-         * unconditionally propagate
+         * unconditionally propagate <br />
+         * 后续结点会传播唤醒的操作，共享锁可执行,独占锁不可
          */
         static final int PROPAGATE = -3;
 
@@ -613,7 +614,8 @@ public abstract class AbstractQueuedSynchronizer
      * @param mode Node.EXCLUSIVE for exclusive, Node.SHARED for shared
      * @return the new node
      *
-     * 把当前的线程放入队列,并设置当前线程的模式
+     * 1.并设置当前线程的模式
+     * 2.如果队列里没有节点,就再创建一个队列
      */
     private Node addWaiter(Node mode) {
         Node node = new Node(Thread.currentThread(), mode);
@@ -626,7 +628,7 @@ public abstract class AbstractQueuedSynchronizer
                 return node;
             }
         }
-        enq(node);
+        enq(node); //队列为空, 创建队列、初始化,把节点放入队列
         return node;
     }
 
@@ -809,12 +811,17 @@ public abstract class AbstractQueuedSynchronizer
             /*
              * This node has already set status asking a release
              * to signal it, so it can safely park.
+             *
+             * 前继节点已经成功执行,等待释放锁,所以当前的线程可以安全的park。
              */
             return true;
         if (ws > 0) {
             /*
              * Predecessor was cancelled. Skip over predecessors and
              * indicate retry.
+             *
+             * 前继节点的线程已经被取消,所以跳过已经被取消的节点,并一直往前跳过所有连续的CANCELLED节点
+             *
              */
             do {
                 node.prev = pred = pred.prev;
@@ -825,6 +832,8 @@ public abstract class AbstractQueuedSynchronizer
              * waitStatus must be 0 or PROPAGATE.  Indicate that we
              * need a signal, but don't park yet.  Caller will need to
              * retry to make sure it cannot acquire before parking.
+             *
+             * 当前继节点的waitStatus非SIGNAL & 非CANCELLED,需要设置waitStatus的值为SIGNAL,并返回false,继续自旋
              */
             compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
         }
@@ -833,6 +842,8 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * Convenience method to interrupt current thread.
+     *
+     * 方便方法可以中断当前线程。
      */
     private static void selfInterrupt() {
         Thread.currentThread().interrupt();
@@ -841,10 +852,14 @@ public abstract class AbstractQueuedSynchronizer
     /**
      * Convenience method to park and then check if interrupted
      *
+     * park当前当前线程,并返回线程是否被中断
+     *
      * @return {@code true} if interrupted
      */
     private final boolean parkAndCheckInterrupt() {
         LockSupport.park(this);
+
+        //阻塞结束时,调用Thread.interrupted()来检查结束阻塞的原因是什么
         return Thread.interrupted();
     }
 
@@ -869,16 +884,26 @@ public abstract class AbstractQueuedSynchronizer
         boolean failed = true;
         try {
             boolean interrupted = false;
+
+            //自旋锁,double check
+            //等待前面的节点释放锁
             for (;;) {
-                final Node p = node.predecessor();
-                if (p == head && tryAcquire(arg)) {
+                final Node p = node.predecessor(); //获取该节点的上一个节点
+
+                //如果前继节点就是head,现在就可以直接去尝试获取锁,如果没有其它线程的干扰,肯定是能够获取到的
+                if (p == head/*前继节点就是head*/ && tryAcquire(arg)/*尝试获取锁*/) {
+
+                    //前继节点出队,当前的node设置为head
                     setHead(node);
                     p.next = null; // help GC
                     failed = false;
                     return interrupted;
                 }
-                if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+
+                //去除前面被取消的(CANCELLED)的线程
+                //若前继节点没有没被取消,则表示当前线程可以被park
+                //park当前线程,park结束时检查是否被interrupt,若是则设置interrupted为true,跳出循环后中断线程
+                if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
                     interrupted = true;
             }
         } finally {
@@ -1210,8 +1235,8 @@ public abstract class AbstractQueuedSynchronizer
      */
     public final void acquire(int arg) {
         if (!tryAcquire(arg)/*尝试获取锁*/ &&
-            acquireQueued(addWaiter(Node.EXCLUSIVE/*设置为独占锁等待状态*/), arg)/*进入队列*/)
-            selfInterrupt();
+            acquireQueued(addWaiter(Node.EXCLUSIVE/*设置为独占锁状态,并把当前线程放入了队列中*/), arg)/*放入队列后,阻塞该线程*/)
+            selfInterrupt(); //若park的原因是线程被interrupt掉了,则中断线程
     }
 
     /**
